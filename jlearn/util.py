@@ -11,8 +11,8 @@ def shape_size(x: tuple[int]) -> int:
     
     Parameters
     ----------
-    x
-        a tuple
+    x : tuple of ints
+
         
     Returns
     -------
@@ -28,13 +28,15 @@ def multi_reshape(x: np.ndarray, shapes: list[tuple[int]]) -> list[np.ndarray]:
     
     Parameters
     ---------
+    TODO
     """
     
     shape_sizes = [shape_size(t) for t in shapes]
     
     # check for a valid partition
     if sum(shape_sizes) != len(x):
-        raise Exception(f"Invalid partition from len(x)={len(x)} to {sum(shape_sizes)}")
+        raise Exception(f"Invalid partition from len(x)={len(x)} to"\
+            f" {sum(shape_sizes)}")
         
     out = list()
     s = 0 

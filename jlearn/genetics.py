@@ -64,17 +64,23 @@ def step(pop: Population, fitness_func: Callable[[Chromosome], float],
     else:
         scores = [fitness_func(x) for x in pop]
         
+    # rank the chromos from high to low fitness
+    paired = zip(pop, scores)
+    ranked = sorted(paired, key = lambda x: x[1], reverse = True)
+
     # maintain the number of elite
     if n_elite:
-        paired = zip(pop, scores)
-        ranked = sorted(paired, key = lambda x: x[1], reverse = True)
         for i in range(n_elite):
             out[i] = ranked[i][0]
         
     # breed to fill in the rest of the output
     for i in range(n_elite, len(pop), 2):
-        A = selection_func(pop, scores)
-        B = selection_func(pop, scores)
+
+        # select two chromose for breeding
+        A = selection_func(ranked)
+        B = selection_func(ranked)
+
+        # breeing
         C, D = crossover_func(A, B)
         out[i] = mutation_func(C)
         if i != (len(pop)-1):
@@ -125,14 +131,29 @@ def mutate(A: Chromosome, rate=0.05) -> Chromosome:
         a[c] = np.random.normal()
     return a.reshape(A.shape)
 
-def select(X: list[Chromosome], scores: list[float], k: int=2, 
+def tournament_select(ranked: list[tuple[Chromosome, float]], k: int=2, 
     p: float=1) -> Chromosome:
     """
     Select a chromosome from the population
 
-
     """
-    c = np.random.choice(len(scores), size=k, replace=False)
-    selected = [scores[i] for i in c]
-    return X[c[selected.index(max(selected))]]
-    # TODO add support for P
+    # get the sorted subset of the population
+    idx_comps = np.random.choice(len(ranked), size=k, replace=False)
+    contestants = [ranked[i][0] for i in sorted(idx_comps)]
+
+    # get the index of the tournament winner
+    # https://en.wikipedia.org/wiki/Geometric_distribution
+    idx_winner = (np.random.geometric(p)-1) % k if p < 1 else 0
+
+    return contestants[idx_winner]
+
+def roulette_select(ranked: list[tuple[Chromosome, float]]) -> Chromosome:
+    """
+    Select a chromosome from the population
+    """
+    total_fitness = sum([x[1] for x in ranked])
+    probs = [x[1]/total_fitness for x in ranked]
+
+    idx_winner = np.random.choice(len(ranked), p=probs)
+
+    return ranked[idx_winner][0]
