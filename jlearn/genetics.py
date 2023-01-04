@@ -88,9 +88,9 @@ def step(pop: Population, fitness_func: Callable[[Chromosome], float],
             
     return out, scores
 
-def crossover(A: Chromosome, B: Chromosome) -> tuple[Chromosome]:
+def k_crossover(A: Chromosome, B: Chromosome, k=1) -> tuple[Chromosome]:
     """
-    Single point cross over
+    k point cross over
 
     Parameters
     ----------
@@ -98,6 +98,8 @@ def crossover(A: Chromosome, B: Chromosome) -> tuple[Chromosome]:
         A parent chromosome
     B
         A parent chromosome
+    k
+        number of crossovers
 
     Returns
     -------
@@ -106,29 +108,31 @@ def crossover(A: Chromosome, B: Chromosome) -> tuple[Chromosome]:
     assert A.shape == B.shape, "Cannot crossover differently shaped DNA"
     a = A.flatten()
     b = B.flatten()
-    c = np.random.randint(1, len(a))
-    a[:c], b[:c] = b[:c].copy(), a[:c].copy()
+    inx_crosses =  sorted(np.random.choice(len(a), size=k))
+    for c in inx_crosses:
+        a[:c], b[:c] = b[:c].copy(), a[:c].copy()
     return a.reshape(A.shape), b.reshape(B.shape)
 
 
-def mutate(A: Chromosome, rate=0.05) -> Chromosome:
+def mutate(A: Chromosome, p=0.05, val=np.random.normal) -> Chromosome:
     """
     Mutate a chromosome
 
     | Param | Desc |
     | -     | -    |
     | A     | The chromosome the mutate |
-    | rate  | the chance for any one gene to mutate | 
+    | p  | the chance for any one gene to mutate | 
+    | val | returns the new value for the gene |
 
     ### returns 
     the mutated chromome
 
     """
     a = A.flatten()
-    hits = np.random.binomial(len(a), rate)
+    hits = np.random.binomial(len(a), p)
     for _ in range(hits):
         c = np.random.randint(1, len(a))
-        a[c] = np.random.normal()
+        a[c] = val()
     return a.reshape(A.shape)
 
 def tournament_select(ranked: list[tuple[Chromosome, float]], k: int=2, 
