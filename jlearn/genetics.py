@@ -2,7 +2,7 @@
 Functions for genetic algorithms
 '''
 
-import multiprocessing
+import concurrent.futures
 import numpy as np
 from typing import Callable
 
@@ -10,146 +10,219 @@ from typing import Callable
 Chromosome = np.ndarray
 Population = list[Chromosome]
 
-def step(pop: Population, fitness_func: Callable[[Chromosome], float],
-         selection_func: Callable[[Population, list[float]], Chromosome],
-         crossover_func: Callable[[Chromosome, Chromosome], 
-                                  tuple[Chromosome, Chromosome]],
-         mutation_func: Callable[[Chromosome], Chromosome],
-         multiproc: bool = False, fitness_samples: int = 1, n_elite: int = 0
-        ) -> tuple[Population, list[float]] :
-    """
-    Get the next population
+class Step():
 
-    This function should be called in a loop with it's output population 
-    being fed back into pop. Each step should produce a more fit population. 
+    def __init__(self, fitness_func: Callable[[Chromosome], float],
+        selection_func: Callable[[Population, list[float]], Chromosome],
+        crossover_func: Callable[[Chromosome, Chromosome], 
+                                tuple[Chromosome, Chromosome]],
+        mutation_func: Callable[[Chromosome], Chromosome],
+        multiproc: bool = False, fitness_samples: int = 1, p_elite: float = 0.05):
+        """Configure a step function for getting the next population
 
-    Parameters
-    ----------
-    pop
-        The population to improve the fitness of. The more fit a population is, 
-        the more fit the output will be.
-    fitness_func
-        Evaluates the fitnes of a single chromosome. The return value should be 
-        >= 0. Higher return value should mean better (more desireable) fitness. 
-    selection_func
-        Given a set of chromosomes and their matching fitness scores, select and 
-        return a single chromosome for breeding.
-    crossover_func
-        Given two chromosomes, return two new combined chromosomes.
-    mutation_func
-        Returns a randomly modified chromosome.
-    multiproc
-        Whether to use multiprocessing to evalute fitness. This may not work in 
-        an IPython enviornment.
-    fitness_samples
-        Number of times to evalute the fitness of a chromosome. The chromosome 
-        is assigned its average score.
-    n_elite
-        The number of elite chromosomes to maintain from input population to the 
-        output. 
-    
-    Returns
-    -------
-    Returns the output population of chromosomes and the fitness scores of the 
-    input population. 
-    """
-    
-    # the population to return
-    out = [None] * len(pop)
-    
-    # evaluate the scores of each chromosome
-    if multiproc:
-        with multiprocessing.Pool() as pool:
-            scores = pool.map(fitness_func, pop)
-    else:
-        scores = [fitness_func(x) for x in pop]
+        Args:
+            fitness_func (Callable[[Chromosome], float]): Evaluates the fitnes of a single chromosome. The return value should be >= 0. Higher return value should mean better (more desireable) fitness. 
+            selection_func (Callable[[Population, list[float]], Chromosome]): Given a set of chromosomes and their matching fitness scores, select and 
+            return a single chromosome for breeding.
+            crossover_func (Callable[[Chromosome, Chromosome], tuple[Chromosome, Chromosome]]): Given two chromosomes, return two new combined chromosomes.
+            mutation_func (Callable[[Chromosome], Chromosome]): Returns a randomly modified chromosome.
+            multiproc (bool, optional): run using multiprocessing. only use this if your population is large or if you have an expensive fitness function. Defaults to False.
+            fitness_samples (int, optional): resample the fitness function and average the score for non-deterministic fitness functions. Defaults to 1.
+            p_elite (float, optional): the percent of elite to maintain in each generation. Defaults to 0.05.
+        """
+        self.fitness = fitness_func
+        self.selection = selection_func
+        self.crossover = crossover_func
+        self.mutation = mutation_func
+        self.multiproc = multiproc
+        self.fitness_samples = fitness_samples
+        self.p_elite = p_elite
+        # can use ThreadPoolExecutor if you are I/O bound for fitness
+        self.exe = concurrent.futures.ProcessPoolExecutor()
+
+    def __call__(self, pop: Population) -> tuple[Population, list[float]]:
+        """Get the next generation of the population
+
+        Args:
+            pop (Population): a population to evolve
+
+        Returns:
+            tuple[Population, list[float]]: the new population and the input population's fitness scores
+        """
         
-    # rank the chromos from high to low fitness
-    paired = zip(pop, scores)
-    ranked = sorted(paired, key = lambda x: x[1], reverse = True)
-
-    # maintain the number of elite
-    if n_elite:
-        for i in range(n_elite):
-            out[i] = ranked[i][0]
+        # the population to return
+        out = [None] * len(pop)
         
-    # breed to fill in the rest of the output
-    for i in range(n_elite, len(pop), 2):
-
-        # select two chromose for breeding
-        A = selection_func(ranked)
-        B = selection_func(ranked)
-
-        # breeing
-        C, D = crossover_func(A, B)
-        out[i] = mutation_func(C)
-        if i != (len(pop)-1):
-            out[i+1] = mutation_func(D)
+        # evaluate the scores of each chromosome
+        if self.multiproc:
+            scores = list(self.exe.map(self.fitness, pop))
+        else:
+            scores = [self.fitness(x) for x in pop]
             
-    return out, scores
+        # rank the chromos from high to low fitness
+        paired = zip(pop, scores)
+        ranked = sorted(paired, key = lambda x: x[1], reverse = True)
 
-def k_crossover(A: Chromosome, B: Chromosome, k=1) -> tuple[Chromosome]:
+        n_elite = int(self.p_elite * len(pop))
+
+        # maintain the number of elite
+        if n_elite:
+            for i in range(n_elite):
+                out[i] = ranked[i][0]
+            
+        # breed to fill in the rest of the output
+        for i in range(n_elite, len(pop), 2):
+
+            # select two chromose for breeding
+            x = self.selection(ranked)
+            y = self.selection(ranked)
+
+            # breeing
+            x, y = self.crossover(x, y)
+            out[i] = self.mutation(x)
+            if i != (len(pop)-1):
+                out[i+1] = self.mutation(y)
+                
+        return out, scores
+
+    def end(self):
+        """Call this if you use multiproc
+        """
+        self.exe.shutdown()
+
+class KCrossover():
     """
-    k point cross over
-
-    Parameters
-    ----------
-    A
-        A parent chromosome
-    B
-        A parent chromosome
-    k
-        number of crossovers
-
-    Returns
-    -------
-    The two crossed over chromosomes
+    Crossover routine that does a set amount of crosses
     """
-    assert A.shape == B.shape, "Cannot crossover differently shaped DNA"
-    a = A.flatten()
-    b = B.flatten()
-    inx_crosses =  sorted(np.random.choice(len(a), size=k))
-    for c in inx_crosses:
-        a[:c], b[:c] = b[:c].copy(), a[:c].copy()
-    return a.reshape(A.shape), b.reshape(B.shape)
 
+    def __init__(self, k: int = 1):
+        """Returns a new crossover routine
 
-def mutate(A: Chromosome, p=0.05, val=np.random.normal) -> Chromosome:
+        Args:
+            k (int, optional): The number of crossover points. Defaults to 1.
+
+        Raises:
+            Exception: K must be a positive integer
+        """
+
+        if not isinstance(k, int) or k < 1:
+            raise Exception('k must be a positive integer')
+
+        self.k = k
+
+    def __call__(self, x: Chromosome, y: Chromosome) -> tuple[Chromosome]:
+        """Crossover two chromosomes at self.k points
+
+        Args:
+            x (Chromosome): The first chromosome
+            y (Chromosome): The second chromosome
+
+        Raises:
+            TypeError: Inputs must be numpy.ndarrays
+            Exception: The inputs must have the same shape
+            Exception: The inputs must not contain more elements than self.k
+
+        Returns:
+            tuple[Chromosome]: The two new chromosomes
+        """
+         
+        if not isinstance(x, np.ndarray) or not isinstance(y, np.ndarray):
+            raise TypeError(f"Crossover takes two np.ndarray not "\
+                f"{type(x)} and {type(y)}")
+
+        if not x.shape == y.shape:
+            raise Exception("Cannot crossover differently shaped DNA")
+
+        a = x.flatten()
+        b = y.flatten()
+
+        k = self.k
+
+        if len(a) < k:
+            raise Exception(f"cannot crossover {k} times with {len(a)} genes")
+
+        # sorted to avoid "switching back" the same genes
+        idx_crosses =  sorted(np.random.choice(len(a), size=k))
+
+        # at each cross, swtich the tails
+        for c in idx_crosses:
+            a[:c], b[:c] = b[:c].copy(), a[:c].copy()
+
+        return a.reshape(x.shape), b.reshape(y.shape)
+   
+
+class PMutate():
+    """Mutates a chromosome
     """
-    Mutate a chromosome
 
-    | Param | Desc |
-    | -     | -    |
-    | A     | The chromosome the mutate |
-    | p  | the chance for any one gene to mutate | 
-    | val | returns the new value for the gene |
+    def __init__(self, p: float = 0.01, value: Callable = np.random.normal):
+        """Create a new mutation routine
 
-    ### returns 
-    the mutated chromome
+        Args:
+            p (float, optional): The chance for any one gene to mutate. Defaults to 0.01.
+            value (Callable, optional): The routine to return a new gene. Defaults to np.random.normal.
 
-    """
-    a = A.flatten()
-    hits = np.random.binomial(len(a), p)
-    for _ in range(hits):
-        c = np.random.randint(1, len(a))
-        a[c] = val()
-    return a.reshape(A.shape)
+        Raises:
+            Exception: P should be a positve float
+        """
+        if not isinstance(p, float):
+            raise Exception("p should be a float")
+        if p <= 0: 
+            raise Exception("p should be positive")
 
-def tournament_select(ranked: list[tuple[Chromosome, float]], k: int=2, 
-    p: float=1) -> Chromosome:
-    """
-    Select a chromosome from the population
+        self.p = p
 
-    """
-    # get the sorted subset of the population
-    idx_comps = np.random.choice(len(ranked), size=k, replace=False)
-    contestants = [ranked[i][0] for i in sorted(idx_comps)]
+        # TODO add checks for the value
+        self.value = value
 
-    # get the index of the tournament winner
-    # https://en.wikipedia.org/wiki/Geometric_distribution
-    idx_winner = (np.random.geometric(p)-1) % k if p < 1 else 0
+    def __call__(self, x: Chromosome) -> Chromosome:
+        """mutate a chromosome
 
-    return contestants[idx_winner]
+        each gene in the chromosome has chance self.p to be replaced
+
+        Args:
+            x (Chromosome): the chromosome to mutate
+
+        Returns:
+            Chromosome: the new mutated chromosome
+        """
+        a = x.flatten()
+        n_hits = np.random.binomial(len(a), self.p)
+        idx_hits = np.random.choice(len(a), size=n_hits, replace=False)
+        for i in idx_hits:
+            a[i] = self.value()
+        return a.reshape(x.shape)
+
+class Tournament_Select():
+
+    def __init__(self, k:int=2, p:float=1):
+        """Create a new selection pressure routine
+
+        Args:
+            k (int, optional): The number of chromosomes to pick from. Defaults to 2.
+            p (float, optional): The chance for selection. Defaults to 1.
+        """
+        self.k = k
+        self.p = p
+    
+    def __call__(self, ranked: list[tuple[Chromosome, float]]) -> Chromosome:
+        """Get a chromosome from a population based on selection pressure
+
+        Args:
+            ranked (list[tuple[Chromosome, float]]): The chromosomes and their fitness values in order of fitness
+
+        Returns:
+            Chromosome: the selected chromosome
+        """
+        # get the sorted subset of the population
+        idx_comps = np.random.choice(len(ranked), size=self.k, replace=False)
+        contestants = [ranked[i][0] for i in sorted(idx_comps)]
+
+        # get the index of the tournament winner
+        # https://en.wikipedia.org/wiki/Geometric_distribution
+        i = (np.random.geometric(self.p)-1) % self.k if self.p < 1 else 0
+
+        return contestants[i]
 
 def roulette_select(ranked: list[tuple[Chromosome, float]]) -> Chromosome:
     """
